@@ -43,7 +43,7 @@ func parseLiteralValue(v *expr.Literal) (interface{}, error) {
 			str = str[1 : len(str)-1]
 		}
 		return str, nil
-	case "int":
+	case "int", "numeric":
 		return strconv.ParseInt(v.Value, 10, 64)
 	case "float":
 		return strconv.ParseFloat(v.Value, 64)

@@ -3,49 +3,18 @@ package firestore
 import (
 	"database/sql/driver"
 	"fmt"
-	"github.com/viant/sqlparser"
+	"github.com/viant/sqlparser/expr"
 	"github.com/viant/sqlparser/query"
+	"io"
 	"reflect"
 )
 
+// Rows represents a result set for a SQL query
 type Rows struct {
-	columns []string
-	values  [][]interface{}
-	index   int
-}
-
-// NewRows creates a new Rows instance from Firebase data
-func NewRows(results []map[string]interface{}, selectStmt *query.Select) *Rows {
-	columns := make([]string, 0)
-
-	isStar := selectStmt.List.IsStarExpr()
-	if len(selectStmt.List) > 0 && !isStar {
-		for _, item := range selectStmt.List {
-			colName := sqlparser.Stringify(item.Expr)
-			columns = append(columns, colName)
-		}
-	} else {
-		// No specific columns requested or SELECT *
-		if len(results) > 0 {
-			for col := range results[0] {
-				columns = append(columns, col)
-			}
-		}
-	}
-
-	values := make([][]interface{}, len(results))
-	for i, record := range results {
-		row := make([]interface{}, len(columns))
-		for j, colName := range columns {
-			row[j] = record[colName]
-		}
-		values[i] = row
-	}
-
-	return &Rows{
-		columns: columns,
-		values:  values,
-	}
+	columns     []string
+	columnTypes []string
+	data        [][]interface{}
+	currentRow  int
 }
 
 // Columns returns the names of the columns
@@ -53,36 +22,88 @@ func (r *Rows) Columns() []string {
 	return r.columns
 }
 
-// Close closes the Rows, preventing further enumeration
+// Close closes the rows iterator
 func (r *Rows) Close() error {
 	return nil
 }
 
-// ColumnTypeScanType returns the ScanType of the column at the given index
-func (r *Rows) ColumnTypeScanType(index int) reflect.Type {
-	if len(r.values) == 0 || index >= len(r.values[0]) {
-		return nil
-	}
-	return reflect.TypeOf(r.values[0][index])
-}
-
-// ColumnTypeDatabaseTypeName returns the database type name of the column
-func (r *Rows) ColumnTypeDatabaseTypeName(index int) string {
-	rType := r.ColumnTypeScanType(index)
-	if rType != nil {
-		return rType.Name()
-	}
-	// Return a generic type as Firebase is schemaless
-	return "TEXT"
-}
-
+// Next moves the cursor to the next row
 func (r *Rows) Next(dest []driver.Value) error {
-	if r.index >= len(r.values) {
-		return fmt.Errorf("no more rows")
+	if r.currentRow >= len(r.data) {
+		return io.EOF
 	}
-	for i := range dest {
-		dest[i] = r.values[r.index][i]
+
+	// Copy the current row's values to dest
+	for i, val := range r.data[r.currentRow] {
+		dest[i] = val
 	}
-	r.index++
+	r.currentRow++
 	return nil
+}
+
+// NewRows creates a new result set from map data
+func NewRows(results []map[string]interface{}, selectStmt *query.Select) *Rows {
+	rows := &Rows{
+		currentRow: 0,
+	}
+
+	if len(results) == 0 {
+		rows.columns = []string{}
+		rows.data = [][]interface{}{}
+		return rows
+	}
+
+	// Determine columns from SELECT statement
+	rows.columns = extractColumns(selectStmt, results[0])
+	rows.columnTypes = make([]string, len(rows.columns))
+
+	// Transform map data to row data
+	rows.data = make([][]interface{}, len(results))
+	for i, result := range results {
+		row := make([]interface{}, len(rows.columns))
+		for j, col := range rows.columns {
+			row[j] = result[col]
+
+			// For the first row, determine column types
+			if i == 0 && result[col] != nil {
+				rows.columnTypes[j] = reflect.TypeOf(result[col]).String()
+			}
+		}
+		rows.data[i] = row
+	}
+
+	return rows
+}
+
+// extractColumns determines the columns to include in the result set
+func extractColumns(selectStmt *query.Select, firstRow map[string]interface{}) []string {
+	// Check if SELECT * is used
+	if selectStmt.List.IsStarExpr() {
+		// Include all columns in the result
+		columns := make([]string, 0, len(firstRow))
+		for col := range firstRow {
+			columns = append(columns, col)
+		}
+		return columns
+	}
+
+	// Use specified columns from SELECT clause
+	columns := make([]string, len(selectStmt.List))
+	for i, item := range selectStmt.List {
+		switch anExpr := item.Expr.(type) {
+		case *expr.Ident:
+			columns[i] = anExpr.Name
+		case *expr.Selector:
+			columns[i] = anExpr.Name
+			if anExpr.X != nil {
+				if ident, ok := anExpr.X.(*expr.Ident); ok {
+					columns[i] = fmt.Sprintf("%s.%s", ident.Name, anExpr.Name)
+				}
+			}
+		default:
+			columns[i] = fmt.Sprintf("col%d", i)
+		}
+	}
+
+	return columns
 }

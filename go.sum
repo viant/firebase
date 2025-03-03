@@ -900,8 +900,8 @@ github.com/viant/parsly v0.3.3-0.20240717150634-e1afaedb691b h1:3q166tV28yFdbFV+
 github.com/viant/parsly v0.3.3-0.20240717150634-e1afaedb691b/go.mod h1:85fneXJbErKMGhSQto3A5ElTQCwl3t74U9cSV0waBHw=
 github.com/viant/scy v0.15.4 h1:cjqCbNIAdRIsIO3GrdI39GKbUx+jcpOvtGdgeAgVkjA=
 github.com/viant/scy v0.15.4/go.mod h1:yHDc9YmfDqhxiMPZcCRS+rb9KUjMNZniWZ9LMQoM0KI=
-github.com/viant/sqlparser v0.7.5 h1:LLJ/Y2uaqDKm94U2mr6ewnBuNl3L3+nvkDFRolM6w5M=
-github.com/viant/sqlparser v0.7.5/go.mod h1:2QRGiGZYk2/pjhORGG1zLVQ9JO+bXFhqIVi31mkCRPg=
+github.com/viant/sqlparser v0.8.1 h1:nbcTecMtW7ROk5aNB5/BWUxnduepRPOkhVo9RWxI1Ns=
+github.com/viant/sqlparser v0.8.1/go.mod h1:2QRGiGZYk2/pjhORGG1zLVQ9JO+bXFhqIVi31mkCRPg=
 github.com/viant/toolbox v0.34.5/go.mod h1:OxMCG57V0PXuIP2HNQrtJf2CjqdmbrOx5EkMILuUhzM=
 github.com/viant/toolbox v0.36.0 h1:UYKY3WokI/hn4IBDz8fLe8mYt9YQiJf/q+GCRt7HpUY=
 github.com/viant/toolbox v0.36.0/go.mod h1:OxMCG57V0PXuIP2HNQrtJf2CjqdmbrOx5EkMILuUhzM=

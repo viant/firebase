@@ -18,6 +18,8 @@ func (s *Statement) querySelect(ctx context.Context, args []driver.NamedValue) (
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse select statement: %v", err)
 	}
+
+	// Handle raw expressions if present
 	table := sqlparser.Stringify(selectStmt.From.X)
 	if rawExpr, ok := selectStmt.From.X.(*expr.Raw); ok {
 		if err = shared.RemapInnerQuery(selectStmt, rawExpr, &table); err != nil {
@@ -25,8 +27,53 @@ func (s *Statement) querySelect(ctx context.Context, args []driver.NamedValue) (
 		}
 	}
 
-	collectionName := sqlparser.TableName(selectStmt)
-	collectionRef := s.conn.client.Collection(collectionName)
+	// Get collection reference - check if it's a subcollection path
+	var collectionRef *firestore.CollectionRef
+
+	// Check for collection[id=?].subcollection format
+	selector := sqlparser.TableSelector(selectStmt)
+	if selector != nil && selector.Expression != "" {
+		// Handle collection[id=?].subcollection format
+		parent, subCollection, err := parseDocumentPath(selector, args)
+		if err != nil {
+			return nil, err
+		}
+		collectionRef = s.conn.client.Collection(parent).Doc(subCollection.docID).Collection(subCollection.collName)
+	} else {
+		// Standard collection reference
+		collectionName := sqlparser.TableName(selectStmt)
+		collectionRef = s.conn.client.Collection(collectionName)
+	}
+
+	// Check if we have a WHERE clause with docid = 'value'
+	argsInterface := convertNamedValuesToInterfaceSlice(args)
+	docID, hasDocID, err := FindDocIDInWhere(selectStmt.Qualify, argsInterface)
+	if err != nil {
+		return nil, err
+	}
+
+	// If we have a docid filter, fetch the document directly
+	if hasDocID {
+		docRef := collectionRef.Doc(docID)
+		doc, err := docRef.Get(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get document by ID: %v", err)
+		}
+
+		// Create result from the single document
+		var results []map[string]interface{}
+		data := doc.Data()
+
+		// Include the document ID as a field
+		data["id"] = doc.Ref.ID
+		data[DocIDColumn] = doc.Ref.ID
+
+		results = append(results, data)
+
+		// Build Rows from results
+		rows := NewRows(results, selectStmt)
+		return rows, nil
+	}
 
 	// Build the query based on WHERE clause
 	queryRef, err := buildFirestoreSelectQuery(collectionRef, selectStmt, args)
@@ -49,13 +96,15 @@ func (s *Statement) querySelect(ctx context.Context, args []driver.NamedValue) (
 
 		data := doc.Data()
 
-		// Include the document ID as a field if needed
-		if _, exists := data["id"]; !exists {
-			data["id"] = doc.Ref.ID
-		}
+		// Include the document ID as a field
+		data["id"] = doc.Ref.ID
+		data[DocIDColumn] = doc.Ref.ID
 
 		results = append(results, data)
 	}
+
+	// Add docid to results if needed
+	AddDocIDToResults(selectStmt, results)
 
 	// Build Rows from results
 	rows := NewRows(results, selectStmt)
@@ -70,26 +119,45 @@ func buildFirestoreSelectQuery(collectionRef *firestore.CollectionRef, selectStm
 
 	// Apply WHERE clause
 	if selectStmt.Qualify != nil && selectStmt.Qualify.X != nil {
-		switch amExpr := selectStmt.Qualify.X.(type) {
-		case *expr.Binary:
-			colName, ok := amExpr.X.(*expr.Ident)
-			if !ok {
-				return queryRef, fmt.Errorf("invalid column name in WHERE clause")
+		// Skip processing if the WHERE clause is just docid = value (already handled)
+		isDocIDOnly := false
+
+		if binary, ok := selectStmt.Qualify.X.(*expr.Binary); ok {
+			if binary.Op == "=" {
+				if ident, ok := binary.X.(*expr.Ident); ok && IsDocIDColumn(ident.Name) {
+					isDocIDOnly = true
+				}
 			}
-			value, err := eval.evaluateExpr(amExpr.Y)
-			if err != nil {
-				return queryRef, fmt.Errorf("could not resolve value in WHERE clause: %v", err)
-			}
-			switch amExpr.Op {
-			case "=":
-				queryRef = queryRef.Where(colName.Name, "==", value)
-			case ">", ">=", "<", "<=":
-				queryRef = queryRef.Where(colName.Name, amExpr.Op, value)
+		}
+
+		if !isDocIDOnly {
+			switch amExpr := selectStmt.Qualify.X.(type) {
+			case *expr.Binary:
+				colName, ok := amExpr.X.(*expr.Ident)
+				if !ok {
+					return queryRef, fmt.Errorf("invalid column name in WHERE clause")
+				}
+
+				// Skip docid condition as it's handled separately
+				if IsDocIDColumn(colName.Name) {
+					break
+				}
+
+				value, err := eval.evaluateExpr(amExpr.Y)
+				if err != nil {
+					return queryRef, fmt.Errorf("could not resolve value in WHERE clause: %v", err)
+				}
+				switch amExpr.Op {
+				case "=":
+					queryRef = queryRef.Where(colName.Name, "==", value)
+				case ">", ">=", "<", "<=":
+					queryRef = queryRef.Where(colName.Name, amExpr.Op, value)
+				default:
+					return queryRef, fmt.Errorf("unsupported operator in WHERE clause: %s", amExpr.Op)
+				}
 			default:
-				return queryRef, fmt.Errorf("unsupported operator in WHERE clause: %s", amExpr.Op)
+				return queryRef, fmt.Errorf("unsupported WHERE clause")
 			}
-		default:
-			return queryRef, fmt.Errorf("unsupported WHERE clause")
 		}
 	}
 
@@ -126,6 +194,10 @@ func buildFirestoreSelectQuery(collectionRef *firestore.CollectionRef, selectStm
 			colName, ok := colExpr.(*expr.Ident)
 			if !ok {
 				return queryRef, fmt.Errorf("unsupported ORDER BY expression")
+			}
+			// Skip docid order by as it's not supported directly
+			if IsDocIDColumn(colName.Name) {
+				continue
 			}
 			direction := firestore.Asc
 			if item.Direction != "" {
