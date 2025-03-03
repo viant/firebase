@@ -75,6 +75,7 @@ func FindDocIDInWhere(qualify *expr.Qualify, args []interface{}) (string, bool, 
 	var found bool
 	var err error
 
+	argIndex := 0
 	// Process binary expression
 	switch whereExpr := qualify.X.(type) {
 	case *expr.Binary:
@@ -94,7 +95,7 @@ func FindDocIDInWhere(qualify *expr.Qualify, args []interface{}) (string, bool, 
 
 		// Extract the document ID value from the right side
 		eval := &evaluator{args: args}
-		value, err := eval.evaluateExpr(whereExpr.Y)
+		value, err := eval.evaluateExpr(whereExpr.Y, &argIndex)
 		if err != nil {
 			return "", false, err
 		}

@@ -12,8 +12,8 @@ type evaluator struct {
 	args []interface{}
 }
 
-func (e *evaluator) evaluateExpr(n node.Node) (interface{}, error) {
-	return e.evaluateExprWithArgIndex(n, nil)
+func (e *evaluator) evaluateExpr(n node.Node, argIndex *int) (interface{}, error) {
+	return e.evaluateExprWithArgIndex(n, argIndex)
 }
 
 func (e *evaluator) evaluateExprWithArgIndex(n node.Node, argIndex *int) (interface{}, error) {

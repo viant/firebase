@@ -33,11 +33,22 @@ func (s *Statement) querySelect(ctx context.Context, args []driver.NamedValue) (
 	// Check for collection[id=?].subcollection format
 	selector := sqlparser.TableSelector(selectStmt)
 	if selector != nil && selector.Expression != "" {
+
+		if shared.IsDryRun(selectStmt) {
+			collectionRef := s.conn.client.Collection(selector.Name)
+			docIter := collectionRef.Documents(ctx)
+			defer docIter.Stop()
+			if doc, _ := docIter.Next(); doc != nil {
+				args[0].Value = doc.Ref.ID
+			}
+		}
+
 		// Handle collection[id=?].subcollection format
 		parent, subCollection, err := parseDocumentPath(selector, args)
 		if err != nil {
 			return nil, err
 		}
+
 		collectionRef = s.conn.client.Collection(parent).Doc(subCollection.docID).Collection(subCollection.collName)
 	} else {
 		// Standard collection reference
@@ -65,18 +76,17 @@ func (s *Statement) querySelect(ctx context.Context, args []driver.NamedValue) (
 		data := doc.Data()
 
 		// Include the document ID as a field
-		data["id"] = doc.Ref.ID
 		data[DocIDColumn] = doc.Ref.ID
 
 		results = append(results, data)
 
 		// Build Rows from results
-		rows := NewRows(results, selectStmt)
+		rows := NewRows(results, false, selectStmt)
 		return rows, nil
 	}
 
 	// Build the query based on WHERE clause
-	queryRef, err := buildFirestoreSelectQuery(collectionRef, selectStmt, args)
+	queryRef, dryRun, err := buildFirestoreSelectQuery(collectionRef, selectStmt, args)
 	if err != nil {
 		return nil, err
 	}
@@ -97,26 +107,29 @@ func (s *Statement) querySelect(ctx context.Context, args []driver.NamedValue) (
 		data := doc.Data()
 
 		// Include the document ID as a field
-		data["id"] = doc.Ref.ID
 		data[DocIDColumn] = doc.Ref.ID
 
 		results = append(results, data)
+		if dryRun { //just fetch one record
+			break
+		}
 	}
 
 	// Add docid to results if needed
 	AddDocIDToResults(selectStmt, results)
 
 	// Build Rows from results
-	rows := NewRows(results, selectStmt)
+	rows := NewRows(results, dryRun, selectStmt)
 
 	return rows, nil
 }
 
 // Helper function to build Firestore query from SELECT statement
-func buildFirestoreSelectQuery(collectionRef *firestore.CollectionRef, selectStmt *query.Select, args []driver.NamedValue) (firestore.Query, error) {
+func buildFirestoreSelectQuery(collectionRef *firestore.CollectionRef, selectStmt *query.Select, args []driver.NamedValue) (firestore.Query, bool, error) {
 	eval := &evaluator{args: convertNamedValuesToInterfaceSlice(args)}
 	queryRef := collectionRef.Query
 
+	argIndex := 0
 	// Apply WHERE clause
 	if selectStmt.Qualify != nil && selectStmt.Qualify.X != nil {
 		// Skip processing if the WHERE clause is just docid = value (already handled)
@@ -133,9 +146,14 @@ func buildFirestoreSelectQuery(collectionRef *firestore.CollectionRef, selectStm
 		if !isDocIDOnly {
 			switch amExpr := selectStmt.Qualify.X.(type) {
 			case *expr.Binary:
+
+				if shared.IsFalsePredicate(amExpr) {
+					return queryRef, true, nil
+				}
+
 				colName, ok := amExpr.X.(*expr.Ident)
 				if !ok {
-					return queryRef, fmt.Errorf("invalid column name in WHERE clause")
+					return queryRef, false, fmt.Errorf("invalid column name in WHERE clause")
 				}
 
 				// Skip docid condition as it's handled separately
@@ -143,9 +161,9 @@ func buildFirestoreSelectQuery(collectionRef *firestore.CollectionRef, selectStm
 					break
 				}
 
-				value, err := eval.evaluateExpr(amExpr.Y)
+				value, err := eval.evaluateExpr(amExpr.Y, &argIndex)
 				if err != nil {
-					return queryRef, fmt.Errorf("could not resolve value in WHERE clause: %v", err)
+					return queryRef, false, fmt.Errorf("could not resolve value in WHERE clause: %v", err)
 				}
 				switch amExpr.Op {
 				case "=":
@@ -153,10 +171,10 @@ func buildFirestoreSelectQuery(collectionRef *firestore.CollectionRef, selectStm
 				case ">", ">=", "<", "<=":
 					queryRef = queryRef.Where(colName.Name, amExpr.Op, value)
 				default:
-					return queryRef, fmt.Errorf("unsupported operator in WHERE clause: %s", amExpr.Op)
+					return queryRef, false, fmt.Errorf("unsupported operator in WHERE clause: %s", amExpr.Op)
 				}
 			default:
-				return queryRef, fmt.Errorf("unsupported WHERE clause")
+				return queryRef, false, fmt.Errorf("unsupported WHERE clause")
 			}
 		}
 	}
@@ -165,11 +183,11 @@ func buildFirestoreSelectQuery(collectionRef *firestore.CollectionRef, selectStm
 	if selectStmt.Limit != nil {
 		limitValue, err := parseExpressionValue(selectStmt.Limit)
 		if err != nil {
-			return queryRef, fmt.Errorf("failed to parse LIMIT value: %v", err)
+			return queryRef, false, fmt.Errorf("failed to parse LIMIT value: %v", err)
 		}
 		limitInt, ok := limitValue.(int64)
 		if !ok {
-			return queryRef, fmt.Errorf("LIMIT value is not an integer")
+			return queryRef, false, fmt.Errorf("LIMIT value is not an integer")
 		}
 		queryRef = queryRef.Limit(int(limitInt))
 	}
@@ -178,11 +196,11 @@ func buildFirestoreSelectQuery(collectionRef *firestore.CollectionRef, selectStm
 	if selectStmt.Offset != nil {
 		offsetValue, err := parseExpressionValue(selectStmt.Offset)
 		if err != nil {
-			return queryRef, fmt.Errorf("failed to parse OFFSET value: %v", err)
+			return queryRef, false, fmt.Errorf("failed to parse OFFSET value: %v", err)
 		}
 		offsetInt, ok := offsetValue.(int64)
 		if !ok {
-			return queryRef, fmt.Errorf("OFFSET value is not an integer")
+			return queryRef, false, fmt.Errorf("OFFSET value is not an integer")
 		}
 		queryRef = queryRef.Offset(int(offsetInt))
 	}
@@ -193,7 +211,7 @@ func buildFirestoreSelectQuery(collectionRef *firestore.CollectionRef, selectStm
 			colExpr := item.Expr
 			colName, ok := colExpr.(*expr.Ident)
 			if !ok {
-				return queryRef, fmt.Errorf("unsupported ORDER BY expression")
+				return queryRef, false, fmt.Errorf("unsupported ORDER BY expression")
 			}
 			// Skip docid order by as it's not supported directly
 			if IsDocIDColumn(colName.Name) {
@@ -209,7 +227,7 @@ func buildFirestoreSelectQuery(collectionRef *firestore.CollectionRef, selectStm
 		}
 	}
 
-	return queryRef, nil
+	return queryRef, false, nil
 }
 
 // Helper function to parse expressions to values

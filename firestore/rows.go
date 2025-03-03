@@ -11,9 +11,10 @@ import (
 
 // Rows represents a result set for a SQL query
 type Rows struct {
+	dryRun      bool
 	columns     []string
 	columnTypes []string
-	data        [][]interface{}
+	values      [][]interface{}
 	currentRow  int
 }
 
@@ -29,27 +30,51 @@ func (r *Rows) Close() error {
 
 // Next moves the cursor to the next row
 func (r *Rows) Next(dest []driver.Value) error {
-	if r.currentRow >= len(r.data) {
+	if r.currentRow >= len(r.values) || r.dryRun {
 		return io.EOF
 	}
 
 	// Copy the current row's values to dest
-	for i, val := range r.data[r.currentRow] {
+	for i, val := range r.values[r.currentRow] {
 		dest[i] = val
 	}
 	r.currentRow++
 	return nil
 }
 
-// NewRows creates a new result set from map data
-func NewRows(results []map[string]interface{}, selectStmt *query.Select) *Rows {
+// ColumnTypeScanType returns the ScanType of the column at the given index
+func (r *Rows) ColumnTypeScanType(index int) reflect.Type {
+	if len(r.values) == 0 || index >= len(r.values[0]) {
+		return nil
+	}
+	return reflect.TypeOf(r.values[0][index])
+}
+
+// ColumnTypeDatabaseTypeName returns the database type name of the column
+func (r *Rows) ColumnTypeDatabaseTypeName(index int) string {
+	rType := r.ColumnTypeScanType(index)
+	if rType != nil {
+		return rType.Name()
+	}
+	// Return a generic type as Firebase is schemaless
+	return "TEXT"
+}
+
+// ColumnTypeNullable reports whether the column may be null
+func (r *Rows) ColumnTypeNullable(index int) (nullable, ok bool) {
+	return true, true
+}
+
+// NewRows creates a new result set from map values
+func NewRows(results []map[string]interface{}, dryRun bool, selectStmt *query.Select) *Rows {
 	rows := &Rows{
+		dryRun:     dryRun,
 		currentRow: 0,
 	}
 
 	if len(results) == 0 {
 		rows.columns = []string{}
-		rows.data = [][]interface{}{}
+		rows.values = [][]interface{}{}
 		return rows
 	}
 
@@ -57,8 +82,8 @@ func NewRows(results []map[string]interface{}, selectStmt *query.Select) *Rows {
 	rows.columns = extractColumns(selectStmt, results[0])
 	rows.columnTypes = make([]string, len(rows.columns))
 
-	// Transform map data to row data
-	rows.data = make([][]interface{}, len(results))
+	// Transform map values to row values
+	rows.values = make([][]interface{}, len(results))
 	for i, result := range results {
 		row := make([]interface{}, len(rows.columns))
 		for j, col := range rows.columns {
@@ -69,7 +94,7 @@ func NewRows(results []map[string]interface{}, selectStmt *query.Select) *Rows {
 				rows.columnTypes[j] = reflect.TypeOf(result[col]).String()
 			}
 		}
-		rows.data[i] = row
+		rows.values[i] = row
 	}
 
 	return rows

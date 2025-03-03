@@ -71,7 +71,7 @@ func (s *Statement) execInsert(ctx context.Context, args []driver.NamedValue) (d
 					customDocID = fmt.Sprintf("%v", value)
 					hasCustomDocID = true
 				}
-				// Don't add docid to the data map
+				// Don't add docid to the values map
 				continue
 			}
 
@@ -85,14 +85,14 @@ func (s *Statement) execInsert(ctx context.Context, args []driver.NamedValue) (d
 			docRef = collectionRef.Doc(customDocID)
 			_, err = docRef.Set(ctx, data)
 			if err != nil {
-				return nil, fmt.Errorf("failed to insert data with custom ID: %v", err)
+				return nil, fmt.Errorf("failed to insert values with custom ID: %v", err)
 			}
 			lastInsertID = customDocID
 		} else {
 			// Add a new document with auto-generated ID
 			docRef, _, err := collectionRef.Add(ctx, data)
 			if err != nil {
-				return nil, fmt.Errorf("failed to insert data: %v", err)
+				return nil, fmt.Errorf("failed to insert values: %v", err)
 			}
 			lastInsertID = docRef.ID
 		}
@@ -324,6 +324,7 @@ func buildFirestoreQuery(collectionRef *firestore.CollectionRef, qualify *expr.Q
 		}
 	}
 
+	var argIndex = 0
 	switch amExpr := qualify.X.(type) {
 	case *expr.Binary:
 		colName, ok := amExpr.X.(*expr.Ident)
@@ -335,7 +336,7 @@ func buildFirestoreQuery(collectionRef *firestore.CollectionRef, qualify *expr.Q
 			return query, nil
 		}
 
-		value, err := eval.evaluateExpr(amExpr.Y)
+		value, err := eval.evaluateExpr(amExpr.Y, &argIndex)
 		if err != nil {
 			return query, fmt.Errorf("could not resolve value in WHERE clause: %v", err)
 		}
@@ -371,7 +372,7 @@ func parseDocumentPath(selector *expr.Selector, args []driver.NamedValue) (paren
 	}
 
 	idField := strings.TrimSpace(exprParts[0])
-	if idField != "id" {
+	if idField != DocIDColumn {
 		return "", nil, fmt.Errorf("only 'id' field is supported in document path expression, got: %s", idField)
 	}
 
