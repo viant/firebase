@@ -54,14 +54,26 @@ func (r *Rows) ColumnTypeScanType(index int) reflect.Type {
 func (r *Rows) ColumnTypeDatabaseTypeName(index int) string {
 	rType := r.ColumnTypeScanType(index)
 	if rType != nil {
-		return rType.Name()
+		ret := rType.Name()
+		if ret != "" {
+			return ret
+		}
+		if rType == reflect.TypeOf([]byte{}) {
+			return "BLOB"
+		}
 	}
 	// Return a generic type as Firebase is schemaless
 	return "TEXT"
 }
 
 // ColumnTypeNullable reports whether the column may be null
+// ColumnTypeNullable reports whether the column may be null
 func (r *Rows) ColumnTypeNullable(index int) (nullable, ok bool) {
+	if index >= len(r.columns) {
+		if r.columns[index] == DocIDColumn {
+			return false, true
+		}
+	}
 	return true, true
 }
 

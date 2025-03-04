@@ -1,8 +1,10 @@
 package shared
 
 import (
+	"github.com/viant/sqlparser"
 	"github.com/viant/sqlparser/expr"
 	"github.com/viant/sqlparser/query"
+	"strings"
 )
 
 func IsFalsePredicate(binary *expr.Binary) bool {
@@ -13,7 +15,8 @@ func IsFalsePredicate(binary *expr.Binary) bool {
 			}
 		}
 	}
-	return false
+	where := sqlparser.Stringify(binary)
+	return strings.Contains(where, "1=0") || strings.Contains(where, "1 = 0")
 }
 
 func IsDryRun(selectStmt *query.Select) bool {
@@ -21,7 +24,6 @@ func IsDryRun(selectStmt *query.Select) bool {
 		if binary, ok := selectStmt.Qualify.X.(*expr.Binary); ok {
 			return IsFalsePredicate(binary)
 		}
-
 	}
 	return false
 }
